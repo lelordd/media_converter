@@ -1,0 +1,9 @@
+services:
+  image_converter:
+    container_name: media_converter
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    restart: unless-stopped
