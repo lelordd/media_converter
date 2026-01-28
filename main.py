@@ -73,6 +73,43 @@ async def convert_media_endpoint(
         raise HTTPException(status_code=500, detail=f"Conversion error: {e}")
 
 
+@app.post("/crop_media/")
+async def crop_media_endpoint(
+    file: UploadFile = File(...),
+    duration: int = Query(..., description="Duration to crop in seconds from the start")
+):
+    filename = sanitize_filename(file.filename)
+    suffix = Path(filename).suffix.lower().lstrip('.')
+
+    try:
+        # Validate media type
+        _ = get_media_type(suffix)
+
+        logger.info(f"Cropping file: {filename} to {duration}s")
+        
+        cropped_data = crop_media(file, duration)
+
+        mime = (
+            f"audio/{suffix}" if suffix in SUPPORTED_FORMATS["audio"]
+            else f"video/{suffix}"
+        )
+
+        return StreamingResponse(
+            cropped_data,
+            media_type=mime,
+            headers={
+                "Content-Disposition": f"attachment; filename={Path(filename).stem}_cropped.{suffix}"
+            }
+        )
+
+    except ValueError as e:
+        logger.error(str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error cropping {filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Crop error: {e}")
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     idem = f"{request.method} {request.url}"

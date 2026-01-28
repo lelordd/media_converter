@@ -103,3 +103,45 @@ def convert_media(file: UploadFile, output_format: str) -> io.BytesIO:
 
     return data
 
+
+def crop_media(file: UploadFile, duration: int) -> io.BytesIO:
+    """Extract the first X seconds of a media file, keeping same format."""
+    input_suffix = Path(file.filename).suffix
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=input_suffix) as temp_in, \
+         tempfile.NamedTemporaryFile(delete=False, suffix=input_suffix) as temp_out:
+        
+        temp_in.write(file.file.read())
+        temp_in.flush()
+
+        try:
+            # We use 't' to specify duration from the beginning
+            stream = ffmpeg.input(temp_in.name, t=duration)
+            
+            # Keep same format
+            if input_suffix.lstrip(".").lower() in SUPPORTED_FORMATS["audio"]:
+                stream = stream.output(temp_out.name, acodec='copy')
+            else:
+                # For video, we might need to re-encode slightly to ensure exact duration
+                # or use 'copy' if precise cut at keyframes isn't critical.
+                # Here we use copy for speed, but 't' at input level helps.
+                stream = stream.output(temp_out.name, codec='copy')
+
+            stream.run(quiet=True, overwrite_output=True)
+
+            with open(temp_out.name, "rb") as out_f:
+                data = io.BytesIO(out_f.read())
+                data.seek(0)
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg crop failed: {e.stderr.decode() if e.stderr else str(e)}")
+            raise RuntimeError(f"FFmpeg crop error: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error during FFmpeg crop: {e}")
+            raise RuntimeError(f"Unexpected error: {e}")
+        finally:
+            Path(temp_in.name).unlink(missing_ok=True)
+            Path(temp_out.name).unlink(missing_ok=True)
+
+    return data
+
