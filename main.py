@@ -1,10 +1,14 @@
 import logging
 import time
+import uuid
+import os
+import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, Request, File, Query, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, UploadFile, Request, File, Query, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from convert_media import *
 
@@ -18,6 +22,13 @@ logger = logging.getLogger("media_converter")
 
 
 app = FastAPI()
+
+# Ensure exports directory exists
+EXPORTS_DIR = Path("exports")
+EXPORTS_DIR.mkdir(exist_ok=True)
+
+# Mount static files
+app.mount("/exports", StaticFiles(directory="exports"), name="exports")
 
 
 # CORS
@@ -73,12 +84,26 @@ async def convert_media_endpoint(
         raise HTTPException(status_code=500, detail=f"Conversion error: {e}")
 
 
+async def delete_file_after_delay(file_path: str, delay: int = 3600):
+    """Delete a file after a certain delay in seconds."""
+    await asyncio.sleep(delay)
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"Auto-deleted expired file: {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to delete expired file {file_path}: {e}")
+
+
 @app.post("/crop_media/")
 async def crop_media_endpoint(
+    request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     duration: int = Query(..., description="Duration to crop in seconds from the start")
 ):
     filename = sanitize_filename(file.filename)
+    stem = Path(filename).stem
     suffix = Path(filename).suffix.lower().lstrip('.')
 
     try:
@@ -89,18 +114,28 @@ async def crop_media_endpoint(
         
         cropped_data = crop_media(file, duration)
 
-        mime = (
-            f"audio/{suffix}" if suffix in SUPPORTED_FORMATS["audio"]
-            else f"video/{suffix}"
-        )
+        # Generate unique filename for storage
+        unique_id = uuid.uuid4().hex
+        output_filename = f"{stem}_{unique_id}.{suffix}"
+        output_path = EXPORTS_DIR / output_filename
 
-        return StreamingResponse(
-            cropped_data,
-            media_type=mime,
-            headers={
-                "Content-Disposition": f"attachment; filename={Path(filename).stem}_cropped.{suffix}"
-            }
-        )
+        # Save to disk
+        with open(output_path, "wb") as f:
+            f.write(cropped_data.getbuffer())
+
+        # Schedule deletion after 1 hour
+        background_tasks.add_task(delete_file_after_delay, str(output_path))
+
+        # Generate URL
+        base_url = str(request.base_url).rstrip("/")
+        file_url = f"{base_url}/exports/{output_filename}"
+
+        return JSONResponse(content={
+            "status": "success",
+            "filename": output_filename,
+            "url": file_url,
+            "expires_in": 3600
+        })
 
     except ValueError as e:
         logger.error(str(e))
